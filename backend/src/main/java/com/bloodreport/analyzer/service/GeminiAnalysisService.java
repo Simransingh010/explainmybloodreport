@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -19,13 +20,22 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.bloodreport.analyzer.model.BloodMetric;
+import org.springframework.beans.factory.annotation.Autowired;
+
 @Service
 public class GeminiAnalysisService {
 
     @Value("${gemini.api.key}")
     private String apiKey;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    @Autowired
+    private MetricExtractionService metricExtractionService;
+
+    @Autowired
+    private ValidationService validationService;
+
+    private RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public Map<String, Object> analyzeBloodReport(MultipartFile file) throws Exception {
@@ -35,9 +45,35 @@ public class GeminiAnalysisService {
             throw new Exception("Could not extract text from the file. Please ensure it's a valid PDF or image.");
         }
 
-        String analysis = getGeminiAnalysis(fileContent);
+        // Get analysis from Gemini (text + metrics JSON)
+        String rawResponse = getGeminiAnalysis(fileContent);
 
-        return parseAnalysisResponse(analysis, file.getOriginalFilename(), file.getSize());
+        // Parse the response to separate text analysis and metrics
+        Map<String, Object> parsedData = parseGeminiResponse(rawResponse);
+        String analysisText = (String) parsedData.get("text");
+        List<Map<String, String>> extractedMetrics = (List<Map<String, String>>) parsedData.get("metrics");
+
+        // Convert structured metrics to BloodMetric objects
+        List<BloodMetric> metrics = metricExtractionService.extractMetricsFromStructuredData(extractedMetrics);
+
+        // If AI extraction failed or returned nothing, fall back to regex (only for
+        // text files)
+        if (metrics.isEmpty() && file.getContentType() != null && file.getContentType().equals("application/pdf")) {
+            metrics = metricExtractionService.extractMetrics(fileContent);
+        }
+
+        // Validate the metrics
+        List<String> validationWarnings = validationService.validateMetrics(metrics);
+
+        Map<String, Object> result = parseAnalysisResponse(analysisText, file.getOriginalFilename(), file.getSize());
+
+        // Add metrics and validation to the response
+        result.put("metrics", metrics);
+        result.put("validationWarnings", validationWarnings);
+        result.put("hasOutOfRangeValues", validationService.hasAnyOutOfRangeValues(metrics));
+        result.put("criticalCount", validationService.getCriticalCount(metrics));
+
+        return result;
     }
 
     private String extractFileContent(MultipartFile file) throws IOException {
@@ -65,36 +101,41 @@ public class GeminiAnalysisService {
         String url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key="
                 + apiKey;
 
-        String prompt = String.format("""
-                You are a friendly health educator who explains medical information to 10-year-olds.
+        String prompt = String.format(
+                """
+                        You are a friendly health educator who explains medical information to 10-year-olds.
 
-                Analyze this blood report and provide:
+                        Analyze this blood report and provide:
 
-                1. RISK FACTORS (3-5 items): Identify any concerning values or potential health risks.
-                   Format each as a simple, clear statement.
+                        1. RISK FACTORS (3-5 items): Identify any concerning values or potential health risks.
+                           Format each as a simple, clear statement.
 
-                2. LIFESTYLE ADVICE (5-7 items): Give actionable, child-friendly advice to improve health.
-                   Use simple language and positive encouragement.
+                        2. LIFESTYLE ADVICE (5-7 items): Give actionable, child-friendly advice to improve health.
+                           Use simple language and positive encouragement.
 
-                Blood Report Content:
-                %s
+                        3. METRICS DATA: Extract all test results into a JSON array.
+                           Only include numeric results that have values.
 
-                IMPORTANT: Format your response EXACTLY like this:
+                        Blood Report Content:
+                        %s
 
-                RISK FACTORS:
-                - [risk factor 1]
-                - [risk factor 2]
-                - [risk factor 3]
+                        IMPORTANT: Format your response EXACTLY like this:
 
-                LIFESTYLE ADVICE:
-                - [advice 1]
-                - [advice 2]
-                - [advice 3]
-                - [advice 4]
-                - [advice 5]
+                        RISK FACTORS:
+                        - [risk factor 1]
+                        - [risk factor 2]
 
-                Use simple words a 10-year-old would understand. Be encouraging and positive!
-                """, reportContent);
+                        LIFESTYLE ADVICE:
+                        - [advice 1]
+                        - [advice 2]
+
+                        ###JSON_START###
+                        [{"test": "Glucose", "value": "95", "unit": "mg/dL"}, {"test": "Hemoglobin", "value": "14.2", "unit": "g/dL"}]
+                        ###JSON_END###
+
+                        Use simple words a 10-year-old would understand for the text parts. Be encouraging and positive!
+                        """,
+                reportContent);
 
         // Build request body
         Map<String, Object> requestBody = new HashMap<>();
@@ -163,6 +204,34 @@ public class GeminiAnalysisService {
                 : new String[] { "Eat healthy foods", "Exercise regularly", "Get enough sleep" });
         result.put("message", "Analysis complete! Here's what your blood report tells us.");
 
+        return result;
+    }
+
+    private Map<String, Object> parseGeminiResponse(String rawResponse) {
+        Map<String, Object> result = new HashMap<>();
+        String textPart = rawResponse;
+        List<Map<String, String>> metrics = new java.util.ArrayList<>();
+
+        try {
+            if (rawResponse.contains("###JSON_START###") && rawResponse.contains("###JSON_END###")) {
+                String[] parts = rawResponse.split("###JSON_START###");
+                textPart = parts[0].trim();
+
+                String jsonPart = parts[1].split("###JSON_END###")[0].trim();
+
+                // Clean up any potential markdown code blocks around the JSON
+                jsonPart = jsonPart.replace("```json", "").replace("```", "").trim();
+
+                metrics = objectMapper.readValue(jsonPart, new TypeReference<List<Map<String, String>>>() {
+                });
+            }
+        } catch (Exception e) {
+            System.err.println("Error parsing JSON from Gemini response: " + e.getMessage());
+            // Fallback: use the whole response as text and empty metrics
+        }
+
+        result.put("text", textPart);
+        result.put("metrics", metrics);
         return result;
     }
 }

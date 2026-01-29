@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
+import MetricsChart from '../components/MetricsChart';
 import './AnalyzerPage.css';
 
 function AnalyzerPage() {
@@ -56,7 +57,14 @@ function AnalyzerPage() {
       if (response.ok) {
         setTimeout(() => setAnalysis(data), 300);
       } else {
-        setError(data.error || 'Failed to analyze the report');
+        // Handle specific error codes
+        if (response.status === 409) {
+          setError(data.message || 'An upload is already in progress. Please wait.');
+        } else if (response.status === 429) {
+          setError(data.message || 'Rate limit exceeded. Please try again later.');
+        } else {
+          setError(data.error || 'Failed to analyze the report');
+        }
       }
     } catch (err) {
       clearInterval(progressInterval);
@@ -174,6 +182,28 @@ function AnalyzerPage() {
                   <span className="btn-icon">↻</span>
                 </button>
               </div>
+
+              {/* Validation Warnings */}
+              {analysis.validationWarnings && analysis.validationWarnings.length > 0 && (
+                <div className="validation-warnings-section">
+                  <div className="warning-header">
+                    <span className="warning-icon">🔍</span>
+                    <h3>Validation Results</h3>
+                  </div>
+                  <div className="warnings-list">
+                    {analysis.validationWarnings.map((warning, index) => (
+                      <div key={index} className="warning-item">
+                        {warning}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Metrics Visualization */}
+              {analysis.metrics && analysis.metrics.length > 0 && (
+                <MetricsChart metrics={analysis.metrics} />
+              )}
 
               <div className="results-grid">
                 {/* Risk Factors Card */}

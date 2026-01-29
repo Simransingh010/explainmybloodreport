@@ -27,6 +27,12 @@ if [ ! -d "frontend/node_modules" ]; then
     echo ""
 fi
 
+# Load backend environment variables
+if [ -f "backend/.env" ]; then
+    echo -e "${BLUE}📋 Loading backend environment variables...${NC}"
+    export $(grep -v '^#' backend/.env | xargs)
+fi
+
 # Start backend and show output
 echo -e "${GREEN}🚀 Starting Backend (Spring Boot)...${NC}"
 echo -e "${YELLOW}⏳ This may take a minute on first run (downloading dependencies)...${NC}\n"

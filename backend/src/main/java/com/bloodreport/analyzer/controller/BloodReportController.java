@@ -1,13 +1,17 @@
 package com.bloodreport.analyzer.controller;
 
 import com.bloodreport.analyzer.service.GeminiAnalysisService;
+import com.bloodreport.analyzer.service.UploadManager;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/blood-report")
@@ -16,6 +20,9 @@ public class BloodReportController {
 
     @Autowired
     private GeminiAnalysisService geminiService;
+
+    @Autowired
+    private UploadManager uploadManager;
 
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> healthCheck() {
@@ -26,21 +33,50 @@ public class BloodReportController {
     }
 
     @PostMapping("/upload")
-    public ResponseEntity<Map<String, Object>> uploadReport(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<Map<String, Object>> uploadReport(
+            @RequestParam("file") MultipartFile file,
+            HttpServletRequest request) {
+
+        String clientId = getClientIdentifier(request);
+        String requestId = UUID.randomUUID().toString();
+
         try {
+            // Validate file
             if (file.isEmpty()) {
                 return ResponseEntity.badRequest()
                         .body(Map.of("error", "Please select a file to upload"));
             }
 
+            // Check concurrent upload
+            if (!uploadManager.startUpload(clientId, requestId)) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(Map.of(
+                                "error", "Upload in progress",
+                                "message",
+                                "Please wait for your current upload to complete before starting a new one."));
+            }
+
             // Use Gemini AI for real analysis
             Map<String, Object> analysis = geminiService.analyzeBloodReport(file);
+            analysis.put("requestId", requestId);
 
             return ResponseEntity.ok(analysis);
 
         } catch (Exception e) {
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Failed to process file: " + e.getMessage()));
+        } finally {
+            uploadManager.completeUpload(clientId, requestId);
         }
+    }
+
+    private String getClientIdentifier(HttpServletRequest request) {
+        String clientIp = request.getHeader("X-Forwarded-For");
+        if (clientIp == null || clientIp.isEmpty()) {
+            clientIp = request.getRemoteAddr();
+        } else {
+            clientIp = clientIp.split(",")[0].trim();
+        }
+        return clientIp;
     }
 }
