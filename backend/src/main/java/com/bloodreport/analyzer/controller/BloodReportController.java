@@ -11,7 +11,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/blood-report")
-@CrossOrigin(origins = "http://localhost:5173") // React dev server
+@CrossOrigin(origins = "*") // Allow all origins for now - will update with specific Vercel URL
 public class BloodReportController {
 
     @Autowired
