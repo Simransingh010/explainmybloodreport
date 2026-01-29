@@ -26,7 +26,7 @@ describe('AnalyzerPage', () => {
         <AnalyzerPage />
       </BrowserRouter>
     );
-    expect(screen.getByText(/Upload Your Blood Report/i)).toBeInTheDocument();
+    expect(screen.getByText(/Get Your Blood Report Explained/i)).toBeInTheDocument();
   });
 
   it('analyze button is disabled initially', () => {
